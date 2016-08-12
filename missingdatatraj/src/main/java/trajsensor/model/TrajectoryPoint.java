@@ -9,6 +9,11 @@ public class TrajectoryPoint{
 	private String idVehicle;
 	private double speed;
 	private Date timestamp;
+	
+	public TrajectoryPoint() {
+		// TODO Auto-generated constructor stub
+	}
+	
 
 	public TrajectoryPoint(String idSensor, String idVehicle, double speed, Date timestamp) {
 		super();
@@ -18,7 +23,7 @@ public class TrajectoryPoint{
 		this.timestamp = timestamp;
 	}
 
-	public String getIdSensor() {
+	public String getCodeSensor() {
 		return idSensor;
 	}
 

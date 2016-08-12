@@ -12,6 +12,7 @@ import java.util.GregorianCalendar;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.Set;
 
 import org.graphast.model.Edge;
 import org.graphast.model.EdgeImpl;
@@ -21,6 +22,7 @@ import org.graphast.model.NodeImpl;
 
 import it.unimi.dsi.fastutil.longs.LongList;
 import it.unimi.dsi.fastutil.longs.LongListIterator;
+import trajsensor.em.CandidatesFilter;
 import trajsensor.model.Trajectory;
 import trajsensor.model.TrajectoryPoint;
 
@@ -33,17 +35,27 @@ public class ReadSensorData {
 	private static final int SPEED_INDEX = 5;
 	private static final int VEHICLE_ID_INDEX = 8;
 	private static HashMap<String, Trajectory> trajectoryMap = new HashMap<String, Trajectory>();
+	private static HashMap<String, ArrayList<String>> trajectoryMapBySensor = new HashMap<String, ArrayList<String>>();
 	private static ArrayList<TrajectoryPoint> missingPointsList = new ArrayList<TrajectoryPoint>();
 	private static HashSet<String> sensorsCodeList = new HashSet<String>();
 	private static HashMap<String, Long> sensorsCodeNodeIdMap = new HashMap<String, Long>();
 	private static int[][] adjMatrix;
+	private static long[][] maxTimeMatrix;
+	
+	public static Long getNodeIdOfSensor(String code){
+		if(sensorsCodeNodeIdMap!=null){
+			return sensorsCodeNodeIdMap.get(code);
+		}
+		return null;
+	}
 
-	public static void reader(String pathFile, boolean clearAll) throws IOException, ParseException {
+	public static void read(String pathFile, boolean clearAll) throws IOException, ParseException {
 		String strLine = null;
 		FileInputStream fstream = new FileInputStream(pathFile);
 		BufferedReader br = new BufferedReader(new InputStreamReader(fstream));
 		int line = 1, missing = 0;
-		if(clearAll)clearAll();
+		if (clearAll)
+			clearAll();
 
 		while ((strLine = br.readLine()) != null) {
 			String[] split = strLine.split(REGEX);
@@ -62,17 +74,18 @@ public class ReadSensorData {
 			TrajectoryPoint point = new TrajectoryPoint(sensorCodeStr, vehicleId,
 					Double.valueOf(speedStr.replace(",", ".")), getCalendarTime(dateStr, timestampStr));
 
-			loadPoints(vehicleId, point);
+			loadPoints(point);
 			loadSensorCode(sensorCodeStr);
 
-			//System.out.println(line + " " + point);
+			// System.out.println(line + " " + point);
 			line++;
-			if (line == 15000)break;
+			if (line == 15000)
+				break;
 		}
-		//System.out.println(line);
-		//System.out.println(missing);
-		//System.out.println((double) missing / (double) line);
-		//System.out.println(sensorsCodeList);
+		// System.out.println(line);
+		// System.out.println(missing);
+		// System.out.println((double) missing / (double) line);
+		// System.out.println(sensorsCodeList);
 		br.close();
 	}
 
@@ -80,6 +93,7 @@ public class ReadSensorData {
 		trajectoryMap.clear();
 		missingPointsList.clear();
 		sensorsCodeList.clear();
+		trajectoryMapBySensor.clear();
 	}
 
 	private static Date getCalendarTime(String[] dateStr, String[] timestamp) {
@@ -95,13 +109,19 @@ public class ReadSensorData {
 		}
 	}
 
-	private static void loadPoints(String vehicleId, TrajectoryPoint point) {
-		if (vehicleId != null) {
-			if (!trajectoryMap.containsKey(vehicleId)) {
+	private static void loadPoints(TrajectoryPoint point) {
+		if (point.getIdVehicle() != null) {
+			if (!trajectoryMap.containsKey(point.getIdVehicle())) {
 				Trajectory traj = new Trajectory();
-				trajectoryMap.put(vehicleId, traj);
+				trajectoryMap.put(point.getIdVehicle(), traj);
 			}
-			trajectoryMap.get(vehicleId).addNewPoint(point);
+			trajectoryMap.get(point.getIdVehicle()).addNewPoint(point);
+			if (!trajectoryMapBySensor.containsKey(point.getCodeSensor())) {
+				ArrayList<String> trajBySensorLst = new ArrayList<String>();
+				trajectoryMapBySensor.put(point.getCodeSensor(), trajBySensorLst);
+			}
+			trajectoryMapBySensor.get(point.getCodeSensor()).add(point.getIdVehicle());
+
 		} else {
 			missingPointsList.add(point);
 		}
@@ -110,28 +130,31 @@ public class ReadSensorData {
 	public static GraphImpl getSensorGraph(String directory) {
 		GraphImpl graph = new GraphImpl(directory);
 		generateNodes(graph);
-		generateAdjacencyMatrix();
-		
-		
-		for (int i = 0; i < adjMatrix.length; i++) {
-			for (int j = 0; j < adjMatrix.length; j++) {
-
-				int[] costs = { adjMatrix[i][j] };
-				Edge edge;
-				if (adjMatrix[i][j] > 0) {
-					System.out.println("Try to add edge: " + "(" + i  + " " + j  + ")");
-					edge = new EdgeImpl(i, j, adjMatrix[i][j], costs);
-					graph.addEdge(edge);
-				} 
-
-			}
-		}
+		generateMatrices();
+		generateEdges(graph);
 
 		return graph;
 	}
 
-	private static void generateAdjacencyMatrix() {
+	private static void generateEdges(GraphImpl graph) {
+		for (int i = 0; i < adjMatrix.length; i++) {
+			for (int j = 0; j < adjMatrix.length; j++) {
+
+				int[] costs = { (int) maxTimeMatrix[i][j] };
+				Edge edge;
+				if (adjMatrix[i][j] > 0) {
+					System.out.println("Try to add edge: " + "(" + i + " " + j + ")");
+					edge = new EdgeImpl(i, j, adjMatrix[i][j], costs);
+					graph.addEdge(edge);
+				}
+
+			}
+		}
+	}
+
+	private static void generateMatrices() {
 		adjMatrix = new int[sensorsCodeList.size()][sensorsCodeList.size()];
+		maxTimeMatrix = new long[sensorsCodeList.size()][sensorsCodeList.size()];
 
 		for (String vehicleId : trajectoryMap.keySet()) {
 			System.out.println("Analysis vehicle code " + vehicleId);
@@ -143,13 +166,10 @@ public class ReadSensorData {
 				if (ant != null) {
 					suc = iterator.next();
 					// update counting
-					Long fromID = sensorsCodeNodeIdMap.get(ant.getIdSensor());
-					Long toID = sensorsCodeNodeIdMap.get(suc.getIdSensor());
+					Long fromID = sensorsCodeNodeIdMap.get(ant.getCodeSensor());
+					Long toID = sensorsCodeNodeIdMap.get(suc.getCodeSensor());
 					System.out.print("Analysis edge from " + fromID + " " + toID);
-					adjMatrix[fromID.intValue() - 1][toID.intValue() - 1]++;
-					// Add info that pass by a node
-					adjMatrix[fromID.intValue() - 1][fromID.intValue() - 1]++;
-					System.out.println(" update to " + adjMatrix[fromID.intValue() - 1][toID.intValue() - 1]);
+					updateMatricesInfo(ant, suc, fromID, toID);
 					ant = suc;
 				} else {
 					ant = iterator.next();
@@ -157,10 +177,25 @@ public class ReadSensorData {
 
 			}
 			// Add info that pass by a node
-			Long fromID = sensorsCodeNodeIdMap.get(ant.getIdSensor());
+			Long fromID = sensorsCodeNodeIdMap.get(ant.getCodeSensor());
 			adjMatrix[fromID.intValue() - 1][fromID.intValue() - 1]++;
 		}
 
+	}
+
+	private static void updateMatricesInfo(TrajectoryPoint ant, TrajectoryPoint suc, Long fromID, Long toID) {
+		// update counting
+		adjMatrix[fromID.intValue() - 1][toID.intValue() - 1]++;
+
+		// update maximal travel time
+		long deltaTime = suc.getTimestamp().getTime() - ant.getTimestamp().getTime();
+		if (deltaTime > maxTimeMatrix[fromID.intValue() - 1][toID.intValue() - 1]) {
+			maxTimeMatrix[fromID.intValue() - 1][toID.intValue() - 1] = deltaTime;
+		}
+
+		// add info that pass by a node
+		adjMatrix[fromID.intValue() - 1][fromID.intValue() - 1]++;
+		System.out.println(" update to " + adjMatrix[fromID.intValue() - 1][toID.intValue() - 1]);
 	}
 
 	private static void generateNodes(GraphImpl graph) {
@@ -181,10 +216,12 @@ public class ReadSensorData {
 	public static void main(String[] args) {
 
 		try {
-			ReadSensorData.reader("C:/Users/Lívia/git/trajectorysensor/trajsensor/Ofuscado_2014-12-01_A.csv",true);
-			ReadSensorData.reader("C:/Users/Lívia/git/trajectorysensor/trajsensor/Ofuscado_2014-12-01_F.csv",false);
-			ReadSensorData.reader("C:/Users/Lívia/git/trajectorysensor/trajsensor/Ofuscado_2014-12-01_T.csv",false);
-			
+			ReadSensorData.read(
+					"/media/livia/DATA/Workspace/maven.1470949999564/missingdatatraj/Ofuscado_2014-02-01_A.csv", true);
+			// ReadSensorData.reader("C:/Users/Livia/git/trajectorysensor/trajsensor/Ofuscado_2014-12-01_F.csv",false);
+			ReadSensorData.read(
+					"/media/livia/DATA/Workspace/maven.1470949999564/missingdatatraj/Ofuscado_2014-02-01_T.csv", false);
+
 			GraphImpl sensorGraph = ReadSensorData.getSensorGraph("grafoTeste");
 			System.out.println(sensorGraph.getNumberOfNodes());
 			System.out.println(sensorGraph.getNumberOfEdges());
@@ -193,7 +230,7 @@ public class ReadSensorData {
 				System.out.println("Node " + i + " " + node);
 				int[] costs = node.getCosts();
 				if (costs != null)
-				//	System.out.println(costs[0]);
+					System.out.println(costs[0]);
 
 				try {
 					LongList outEdges = sensorGraph.getOutEdges(i);
@@ -201,24 +238,30 @@ public class ReadSensorData {
 					while (iterator.hasNext()) {
 						Long next = iterator.next();
 						Edge edge = sensorGraph.getEdge(next);
-					//	System.out.println(edge.getToNode());
-					//	System.out.println(edge.getCosts()[0]);
+						System.out.println(edge.getToNode());
+						System.out.println(edge.getCosts()[0]);
 						iterator.next();
 					}
 				} catch (Exception e) {
-					
+					System.out.println("No edges.");
 				}
-				
-//				LongListIterator iterator = outEdges.iterator();
-//				while (iterator.hasNext()) {
-//					Long next = iterator.next();
-//					Edge edge = sensorGraph.getEdge(next);
-//					System.out.println(edge.getToNode());
-//					System.out.println(edge.getCosts());
-//					iterator.next();
-//				}
-				sensorGraph.save();
+
 			}
+			System.out.println("Start save.");
+			sensorGraph.save();
+			System.out.println("End save.");
+
+			Set<String> keySet = ReadSensorData.trajectoryMapBySensor.keySet();
+			for (String string : keySet) {
+				System.out.println("Sensor: "+string);
+				System.out.println(ReadSensorData.trajectoryMapBySensor.get(string));
+			}
+			System.out.println("Running filter");
+			if(!missingPointsList.isEmpty()){
+				TrajectoryPoint trajectoryPoint = missingPointsList.get(0);
+				CandidatesFilter.filter(trajectoryPoint, trajectoryMap, trajectoryMapBySensor, sensorGraph);
+			}
+			
 		} catch (IOException e) {
 			// TODO Auto-generated catch block
 			e.printStackTrace();
